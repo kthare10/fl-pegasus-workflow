@@ -1,6 +1,6 @@
 # Federated Learning Pegasus Workflow
 
-> This workflow was generated with [OpenAI Codex](https://openai.com/index/codex/).
+> This workflow was designed with [OpenAI Codex](https://openai.com/index/codex/).
 
 This directory contains a Pegasus WMS workflow for federated learning over
 medical imaging-style data. It supports two modes:
