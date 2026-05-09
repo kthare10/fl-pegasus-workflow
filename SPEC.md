@@ -181,8 +181,8 @@ Inputs:
 
 Outputs:
 
-- Client-specific JSONL shards containing simple feature vectors extracted from
-  real image files for the current baseline.
+- Client-specific JSONL shards containing normalized image arrays, labels, and
+  explicit split membership.
 
 Responsibilities:
 
@@ -221,13 +221,14 @@ Responsibilities:
 
 Outputs:
 
-- `models/round_000_global.json`
+- `models/round_000_global.pt`
 - `models/model_config.json`
 
 Responsibilities:
 
 - Create the initial model checkpoint.
 - Record architecture, random seed, framework versions, and hyperparameters.
+- Support pretrained image backbones such as `resnet18`.
 
 ### 7.5 `train_client`
 
@@ -239,7 +240,7 @@ Inputs:
 
 Outputs:
 
-- `models/round_{r}/client_{id}_weights.json`
+- `models/round_{r}/client_{id}_weights.pt`
 - `metrics/round_{r}/client_{id}_train.json`
 
 Responsibilities:
@@ -247,8 +248,9 @@ Responsibilities:
 - Train locally for configured epochs.
 - Never require raw data from other clients.
 - Emit model delta or full weights plus training metrics.
-- Current baseline implementation uses a lightweight linear model over
-  handcrafted feature vectors rather than a deep neural network.
+- Support end-to-end image training with configurable augmentation,
+  optimizer/scheduler choice, gradient clipping, class-weighted loss, optional
+  backbone freezing, and periodic CPU/GPU/RAM monitoring.
 
 ### 7.6 `aggregate`
 
@@ -259,12 +261,13 @@ Inputs:
 
 Outputs:
 
-- `models/round_{r}_global.json`
+- `models/round_{r}_global.pt`
 - `metrics/round_{r}/round_{r}_aggregation.json`
 
 Responsibilities:
 
 - Implement weighted FedAvg by default.
+- Support FedProx-compatible aggregation metadata.
 - Validate that all required client updates are present.
 - Record excluded clients and failure policy.
 
@@ -284,9 +287,28 @@ Responsibilities:
 
 - Evaluate globally and per client.
 - Compute quality and fairness/domain-shift summaries.
-- Current baseline emits JSON metrics only; plotting remains future work.
+- Support cross-dataset generalization checks when multiple dataset branches are
+  present.
 
-### 7.8 `package_results`
+### 7.8 `train_centralized`
+
+Inputs:
+
+- Pooled client training shards for one dataset branch.
+- Dataset-specific configuration.
+
+Outputs:
+
+- `metrics/{branch}/{branch}_baseline.json`
+
+Responsibilities:
+
+- Train a centralized supervised baseline on pooled branch data.
+- Use the same image-model stack and optimization settings as FL training where
+  applicable.
+- Provide a realistic upper-bound reference for FL comparisons.
+
+### 7.9 `package_results`
 
 Inputs:
 
@@ -295,7 +317,7 @@ Inputs:
 Outputs:
 
 - `results.tar.gz`
-- `summary_tables.csv`
+- `paper_tables.csv`
 - `provenance_summary.json`
 
 Responsibilities:
@@ -305,7 +327,7 @@ Responsibilities:
 
 ## 8. Containers and Execution Sites
 
-Use a single container image for baseline implementation:
+Use a container image that includes the full training stack:
 
 - Python 3.10 or 3.11.
 - Pegasus Python API (`pegasus-wms`) for local workflow generation.
@@ -313,18 +335,16 @@ Use a single container image for baseline implementation:
 - pydicom, SimpleITK, nibabel.
 - pandas, numpy, scikit-learn.
 - matplotlib, seaborn.
-
-Future model-heavy variants may additionally require:
-
 - PyTorch.
-- MONAI or TorchXRayVision.
+- torchvision.
+- psutil and pynvml for resource monitoring.
 
 Pegasus execution:
 
 - CPU preprocessing jobs can run on general execute nodes.
-- Current baseline training jobs run on CPU.
-- GPU training jobs should request GPU resources through Condor profiles once a
-  deep-learning training stack is introduced.
+- Training jobs may run on CPU or GPU depending on `request_gpus` and the
+  selected container/configuration.
+- GPU training jobs should request GPU resources through Condor profiles.
 - Aggregation jobs usually require less memory and may run on CPU.
 
 External data directories should be transferred with CondorIO `transfer_input_files` when needed. Do not rely on container bind mounts for dataset directories in portable experiments.
@@ -355,6 +375,15 @@ Configuration fields:
 - `rounds`
 - `local_epochs`
 - `aggregation`
+- `optimizer`
+- `scheduler`
+- `gradient_clip_norm`
+- `pretrained`
+- `freeze_backbone`
+- `unfreeze_backbone_epoch`
+- `class_weighted_loss`
+- `request_gpus`
+- `monitor_interval_seconds`
 - `evaluation_metrics`
 - `sample_id_column`
 - `patient_id_column`
@@ -395,7 +424,7 @@ The experiment uses public, de-identified datasets, but it still models sensitiv
 |---|---|
 | TCIA collection metadata may not expose clean site labels | Use scanner/protocol/client proxies and document them clearly. |
 | NIH labels are noisy because they were mined from reports | Report label-noise limitations and use robust metrics. |
-| 3D CT training may exceed available GPU resources | Start with cropped nodule patches or radiomics features before full-volume models. |
+| 3D CT training may exceed available GPU resources | Start with resized 2D slices, cropped patches, or smaller backbones before full-volume models. |
 | Dataset downloads are large | Support manifest-only dry runs and small smoke-test subsets. |
 | FL rounds create many intermediate checkpoints | Stage out only selected checkpoints and final artifacts. |
 | Directory scanning breaks Pegasus staging | Pass every input file explicitly through manifests and `File` objects. |
@@ -407,11 +436,11 @@ The experiment uses public, de-identified datasets, but it still models sensitiv
 3. Implement generic FedAvg loop with simulated clients.
 4. Add Pegasus fan-out/fan-in jobs for client training and aggregation.
 5. Refactor FL rounds into Pegasus `SubWorkflow`s.
-6. Add real NIH/TCIA file ingestion with feature-based preprocessing.
+6. Add real NIH/TCIA file ingestion with image-based preprocessing.
 7. Add final evaluation, plots, and `package_results`.
-8. Replace linear baseline with PyTorch/MONAI model training.
-9. Run scalability experiments with increasing clients and rounds.
-10. Export summary tables from workflow outputs.
+8. Add centralized baseline, GPU runtime support, and image-model training.
+9. Add cross-dataset evaluation and resource monitoring.
+10. Run scalability experiments with increasing clients and rounds.
 
 ## 14. Source Links
 

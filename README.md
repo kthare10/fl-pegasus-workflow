@@ -4,8 +4,8 @@ This directory contains a Pegasus WMS workflow for federated learning over
 medical imaging-style data. It supports two modes:
 
 - smoke mode: synthetic/sample data for quick DAG validation
-- real-data mode: actual NIH ChestX-ray14 images or TCIA-style image paths with
-  simple handcrafted feature extraction
+- real-data mode: actual NIH ChestX-ray14 or TCIA-style image inputs with
+  end-to-end image-model training
 
 The workflow produces:
 
@@ -33,6 +33,12 @@ Inside each round subworkflow, Pegasus runs:
 
 1. one `train_client` job per client in parallel
 2. one `aggregate` job that consumes all client updates for that round
+
+In dual-branch mode, the workflow also runs:
+
+1. one preprocessing branch for TCIA and one for NIH
+2. one centralized baseline job per branch
+3. one cross-dataset evaluation job after branch training finishes
 
 ## Repository Layout
 
@@ -68,13 +74,13 @@ Required on that host:
 Minimum Python packages:
 
 ```bash
-pip install pegasus-wms PyYAML torch flwr
+pip install pegasus-wms PyYAML torch torchvision flwr psutil pynvml
 ```
 
 If you want to run the smoke wrappers locally outside Pegasus:
 
 ```bash
-pip install numpy pandas scikit-learn matplotlib seaborn Pillow pydicom SimpleITK torch flwr
+pip install numpy pandas scikit-learn matplotlib seaborn Pillow pydicom SimpleITK torch torchvision flwr psutil pynvml
 ```
 
 ## Container Image Requirement
@@ -130,7 +136,7 @@ For GPU execution, set:
 ```
 
 `workflow_generator.py` already propagates `request_gpus` to `train_client`
-jobs so HTCondor can match them onto GPU-capable slots.
+and `train_centralized` jobs so HTCondor can match them onto GPU-capable slots.
 
 ## Local Smoke Test Without Pegasus
 
@@ -151,8 +157,7 @@ Expected outputs:
 
 ## Real Dataset Support
 
-The workflow now trains on resized image tensors rather than handcrafted
-feature vectors:
+The workflow now trains on resized image tensors:
 
 - NIH preprocessing loads real chest X-ray images and emits normalized image
   records
@@ -167,9 +172,12 @@ feature vectors:
 Pegasus still handles orchestration, while the learning stack now uses:
 
 - PyTorch for model initialization, local training, and evaluation
+- torchvision `resnet18` as the default end-to-end image backbone
 - Flower-compatible parameter aggregation in `bin/aggregate.py`
 - optional FedProx local training via `aggregation: "fedprox"` and
   `fedprox_mu`
+- centralized pooled-data baseline training via `bin/train_centralized.py`
+- periodic CPU/GPU/RAM monitoring in training jobs
 
 Supported `model_name` values:
 
@@ -180,6 +188,17 @@ Supported `model_name` values:
 
 `resnet18` is the intended default for end-to-end image training. The MLP
 variants remain available for compatibility and smoke tests.
+
+Additional runtime controls now supported in configs include:
+
+- `optimizer`: `sgd`, `adam`, or `adamw`
+- `scheduler`: `none`, `step`, or `cosine`
+- `gradient_clip_norm`
+- `pretrained`
+- `freeze_backbone`
+- `unfreeze_backbone_epoch`
+- `class_weighted_loss`
+- `monitor_interval_seconds`
 
 ### NIH ChestX-ray14
 
@@ -418,6 +437,7 @@ The archive includes:
 - paper tables CSV
 - provenance summary JSON
 - per-round aggregation metrics
+- cross-dataset evaluation JSON for dual-branch runs
 
 ## Configuration Files
 
@@ -427,6 +447,10 @@ The archive includes:
   Template for NIH ChestX-ray14-style runs.
 - `configs/tcia_lidc.yaml`
   Template for TCIA LIDC-IDRI-style runs.
+- `configs/nih_tcia_dual_branch_flwr_gpu.json`
+  Dual-branch NIH+TCIA GPU configuration.
+- `configs/nih_tcia_dual_branch_flwr_gpu_smoke.json`
+  Reduced validation config for fast end-to-end pipeline checks.
 
 These files are JSON-compatible YAML, so they can be parsed even when PyYAML is
 not installed. The generator still needs `Pegasus.api`.
