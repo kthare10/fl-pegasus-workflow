@@ -1,0 +1,83 @@
+{
+  "dataset_name": "nih-tcia-dual-branch-flwr-gpu",
+  "task": "dual_branch_cross_dataset_fl",
+  "allow_synthetic_fallback": false,
+  "container_image": "docker://kthare10/fl-medical-imaging:gpu-flwr",
+  "stage_input_data": true,
+  "split_seed": 17,
+  "train_fraction": 0.7,
+  "val_fraction": 0.1,
+  "model_name": "torch-mlp",
+  "feature_dim": 24,
+  "image_size": 96,
+  "hidden_dims": [128, 64],
+  "dropout": 0.1,
+  "batch_size": 32,
+  "learning_rate": 0.001,
+  "rounds": 50,
+  "local_epochs": 5,
+  "aggregation": "fedprox",
+  "optimizer": "adam",
+  "fedprox_mu": 0.01,
+  "request_gpus": 1,
+  "positive_terms": ["nodule", "positive", "malignant", "pneumonia", "effusion", "mass"],
+  "labels": [
+    "Atelectasis",
+    "Cardiomegaly",
+    "Consolidation",
+    "Edema",
+    "Effusion",
+    "Emphysema",
+    "Fibrosis",
+    "Hernia",
+    "Infiltration",
+    "Mass",
+    "Nodule",
+    "Pleural_Thickening",
+    "Pneumonia",
+    "Pneumothorax",
+    "No Finding"
+  ],
+  "evaluation_metrics": ["accuracy", "client_accuracy"],
+  "branch_pipelines": [
+    {
+      "name": "tcia",
+      "dataset_name": "tcia-mixed-collections",
+      "task": "collection_proxy_binary_classification",
+      "data_root": "/home/ubuntu/fl-pegasus-workflow/tcia",
+      "dataset_archive": "/home/ubuntu/fl-pegasus-workflow/tcia_raw_data.tar.gz",
+      "metadata_files": [],
+      "auto_discover_images": true,
+      "patient_id_from": "filename_stem",
+      "label_from_top_level_dir": false,
+      "directory_label_map": {
+        "LIDC-IDRI": "nodule",
+        "NSCLC-Radiogenomics": "malignant",
+        "NSCLC-Radiomics": "malignant",
+        "RIDER-Lung-CT": "benign",
+        "TCGA-LUAD": "malignant"
+      },
+      "default_label": "unknown",
+      "client_partition_strategy": "top_level_directory",
+      "num_clients": 10,
+      "stage_input_data": true
+    },
+    {
+      "name": "nih",
+      "dataset_name": "nih-cxr14",
+      "task": "multi_label_classification",
+      "data_root": "/home/ubuntu/fl-pegasus-workflow/nih/images",
+      "dataset_archive": "/home/ubuntu/fl-pegasus-workflow/nih_raw_data.tar.gz",
+      "metadata_files": [
+        "/home/ubuntu/fl-pegasus-workflow/nih/labels.csv"
+      ],
+      "sample_id_column": "filename",
+      "patient_id_column": "patient_id",
+      "label_column": "label_names",
+      "client_partition_strategy": "patient_label_skew",
+      "num_clients": 10,
+      "stage_input_data": true,
+      "image_path_column": "filename"
+    }
+  ]
+}

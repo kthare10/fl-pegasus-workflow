@@ -1,0 +1,28 @@
+FROM python:3.11-slim
+
+ENV PYTHONUNBUFFERED=1
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        ca-certificates \
+        curl \
+        git \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN pip install --no-cache-dir \
+    pegasus-wms==5.1.2 \
+    PyYAML==6.0.2 \
+    numpy==1.26.4 \
+    pandas==2.2.3 \
+    Pillow==10.4.0 \
+    scikit-learn==1.5.2 \
+    matplotlib==3.9.2 \
+    seaborn==0.13.2 \
+    pydicom==3.0.1 \
+    SimpleITK==2.4.0 \
+    nibabel==5.3.2
+
+# Add torch/monai/torchxrayvision in a GPU-specific derivative image when needed.
+
+WORKDIR /workflow
+CMD ["/bin/bash"]

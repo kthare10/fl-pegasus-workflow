@@ -1,0 +1,31 @@
+{
+  "dataset_name": "nih-cxr14-smoke",
+  "task": "multi_label_classification",
+  "data_root": "data/test",
+  "metadata_files": [],
+  "allow_synthetic_fallback": true,
+  "container_image": "docker://username/fl-medical-imaging:latest",
+  "client_partition_strategy": "patient_label_skew_smoke",
+  "num_clients": 3,
+  "samples_per_client": 18,
+  "split_seed": 13,
+  "train_fraction": 0.7,
+  "val_fraction": 0.1,
+  "model_name": "linear-smoke",
+  "feature_dim": 16,
+  "image_size": 224,
+  "batch_size": 8,
+  "learning_rate": 0.05,
+  "rounds": 2,
+  "local_epochs": 1,
+  "aggregation": "fedavg",
+  "request_gpus": 0,
+  "labels": [
+    "Atelectasis",
+    "Cardiomegaly",
+    "Effusion",
+    "Pneumonia",
+    "No Finding"
+  ],
+  "evaluation_metrics": ["accuracy", "client_accuracy"]
+}

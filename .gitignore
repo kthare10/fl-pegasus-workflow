@@ -1,0 +1,23 @@
+.venv/
+__pycache__/
+bin/__pycache__/
+._*
+
+scratch/
+output/
+manifests/
+preprocessed/
+models/
+metrics/
+results/
+*.tar.gz
+
+# Generated Pegasus workflow/DAX files
+workflow.yml
+workflow-*.yml
+replicas.yml
+sites.yml
+transformations.yml
+pegasus.properties
+fl_round_*.yml
+debug-*.yml
