@@ -1,6 +1,6 @@
 {
-  "dataset_name": "nih-tcia-dual-branch",
-  "task": "dual_branch_cross_dataset_fl",
+  "dataset_name": "nih-tcia-mixed",
+  "task": "binary_mixed_medical_imaging",
   "allow_synthetic_fallback": false,
   "container_image": "docker://kthare10/fl-medical-imaging:latest",
   "stage_input_data": true,
@@ -35,13 +35,12 @@
     "No Finding"
   ],
   "evaluation_metrics": ["accuracy", "client_accuracy"],
-  "branch_pipelines": [
+  "dataset_pipelines": [
     {
       "name": "tcia",
       "dataset_name": "tcia-mixed-collections",
       "task": "collection_proxy_binary_classification",
       "data_root": "/home/ubuntu/fl-pegasus-workflow/tcia",
-      "dataset_archive": "",
       "metadata_files": [],
       "auto_discover_images": true,
       "patient_id_from": "filename_stem",
@@ -55,21 +54,21 @@
       },
       "default_label": "unknown",
       "client_partition_strategy": "top_level_directory",
-      "num_clients": 10
+      "num_clients": 10,
+      "samples_per_client": 0
     },
     {
       "name": "nih",
       "dataset_name": "nih-cxr14",
       "task": "multi_label_classification",
       "data_root": "/path/to/ChestX-ray14/images",
-      "dataset_archive": "/path/to/nih-cxr14.tar.gz",
       "metadata_files": ["/path/to/Data_Entry_2017_v2020.csv"],
       "sample_id_column": "Image Index",
       "patient_id_column": "Patient ID",
       "label_column": "Finding Labels",
       "client_partition_strategy": "patient_label_skew",
       "num_clients": 10,
-      "stage_input_data": false
+      "samples_per_client": 0
     }
   ]
 }

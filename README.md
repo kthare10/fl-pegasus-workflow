@@ -1,7 +1,5 @@
 # Federated Learning Pegasus Workflow
 
-> This workflow was designed with [OpenAI Codex](https://openai.com/index/codex/).
-
 This directory contains a Pegasus WMS workflow for federated learning over
 medical imaging-style data. It supports two modes:
 
@@ -70,13 +68,13 @@ Required on that host:
 Minimum Python packages:
 
 ```bash
-pip install pegasus-wms PyYAML
+pip install pegasus-wms PyYAML torch flwr
 ```
 
 If you want to run the smoke wrappers locally outside Pegasus:
 
 ```bash
-pip install numpy pandas scikit-learn matplotlib seaborn Pillow pydicom SimpleITK
+pip install numpy pandas scikit-learn matplotlib seaborn Pillow pydicom SimpleITK torch flwr
 ```
 
 ## Container Image Requirement
@@ -88,8 +86,13 @@ Singularity/Apptainer image. The default template uses a placeholder image:
 "container_image": "docker://username/fl-medical-imaging:latest"
 ```
 
-You must replace this with a real image before running on Pegasus. The base
-recipe is [Docker/FLMedicalImaging_Dockerfile](/Users/kthare10/codex/escience-fl/fl-pegasus-workflow/Docker/FLMedicalImaging_Dockerfile:1).
+You must replace this with a real image before running on Pegasus. Available
+recipes are:
+
+- CPU image:
+  [Docker/FLMedicalImaging_Dockerfile](/Users/kthare10/codex/escience-fl/fl-pegasus-workflow/Docker/FLMedicalImaging_Dockerfile:1)
+- GPU image:
+  [Docker/FLMedicalImaging_GPU.Dockerfile](/Users/kthare10/codex/escience-fl/fl-pegasus-workflow/Docker/FLMedicalImaging_GPU.Dockerfile:1)
 
 Example:
 
@@ -97,6 +100,13 @@ Example:
 cd fl-pegasus-workflow
 docker build -t <your-user>/fl-medical-imaging:latest -f Docker/FLMedicalImaging_Dockerfile .
 docker push <your-user>/fl-medical-imaging:latest
+```
+
+GPU example:
+
+```bash
+docker build -t <your-user>/fl-medical-imaging:gpu -f Docker/FLMedicalImaging_GPU.Dockerfile .
+docker push <your-user>/fl-medical-imaging:gpu
 ```
 
 Then update `configs/experiment.yaml`:
@@ -111,6 +121,16 @@ you can disable container usage by setting:
 ```json
 "container_image": ""
 ```
+
+For GPU execution, set:
+
+```json
+"container_image": "docker://<your-user>/fl-medical-imaging:gpu",
+"request_gpus": 1
+```
+
+`workflow_generator.py` already propagates `request_gpus` to `train_client`
+jobs so HTCondor can match them onto GPU-capable slots.
 
 ## Local Smoke Test Without Pegasus
 
@@ -131,17 +151,35 @@ Expected outputs:
 
 ## Real Dataset Support
 
-The workflow can now run on real files, but it is still a lightweight FL
-baseline:
+The workflow now trains on resized image tensors rather than handcrafted
+feature vectors:
 
-- NIH preprocessing loads real chest X-ray images and converts them into simple
-  intensity-summary feature vectors
-- TCIA preprocessing loads real DICOM/volume/image files and converts them into
-  simple intensity-summary feature vectors
-- training is still a small linear model, not DenseNet, MONAI, or PyTorch yet
+- NIH preprocessing loads real chest X-ray images and emits normalized image
+  records
+- TCIA preprocessing loads real DICOM/volume/image files and emits normalized
+  image records
+- training uses PyTorch image backbones with Flower-compatible aggregation
+- augmentation, backbone freezing, optimizer/scheduler selection, class-weighted
+  loss, gradient clipping, and resource monitoring are configurable
 
-So this is suitable for proving out Pegasus orchestration and real data flow,
-but not yet for paper-grade model performance.
+## FL Runtime
+
+Pegasus still handles orchestration, while the learning stack now uses:
+
+- PyTorch for model initialization, local training, and evaluation
+- Flower-compatible parameter aggregation in `bin/aggregate.py`
+- optional FedProx local training via `aggregation: "fedprox"` and
+  `fedprox_mu`
+
+Supported `model_name` values:
+
+- `resnet18`
+- `torch-mlp`
+- `feature-mlp`
+- `linear-smoke`
+
+`resnet18` is the intended default for end-to-end image training. The MLP
+variants remain available for compatibility and smoke tests.
 
 ### NIH ChestX-ray14
 

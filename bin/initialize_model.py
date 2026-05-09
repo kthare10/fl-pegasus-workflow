@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 
-"""Create the initial global model for the FL workflow."""
+"""Create the initial global model checkpoint for the FL workflow."""
 
 import argparse
 import json
@@ -9,14 +9,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(__file__))
 
-from flwr_torch_utils import (  # noqa: E402
-    build_model_from_spec,
-    ensure_parent,
-    get_model_spec,
-    load_config,
-    model_payload,
-    set_seed,
-)
+from flwr_torch_utils import build_model_from_spec, ensure_parent, get_model_spec, load_config, save_model_payload, checkpoint_payload, set_seed  # noqa: E402
 
 
 def main():
@@ -31,14 +24,19 @@ def main():
     model_spec = get_model_spec(config)
     model = build_model_from_spec(model_spec)
 
-    payload = model_payload(0, model_spec, model.state_dict())
-    payload["aggregation"] = model_spec["aggregation"]
-    payload["fedprox_mu"] = model_spec["fedprox_mu"]
+    payload = checkpoint_payload(
+        0,
+        model_spec,
+        model.state_dict(),
+        extra={
+            "aggregation": model_spec["aggregation"],
+            "fedprox_mu": model_spec["fedprox_mu"],
+        },
+    )
 
     ensure_parent(args.model)
     ensure_parent(args.model_config)
-    with open(args.model, "w", encoding="utf-8") as handle:
-        json.dump(payload, handle, indent=2, sort_keys=True)
+    save_model_payload(args.model, payload)
     with open(args.model_config, "w", encoding="utf-8") as handle:
         json.dump(model_spec, handle, indent=2, sort_keys=True)
     print(f"Initialized {model_spec['model_name']} model at {args.model}")

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 
-"""Preprocess one TCIA federated client into JSONL features."""
+"""Preprocess one TCIA federated client into JSONL image records."""
 
 import argparse
 import csv
@@ -114,18 +114,12 @@ def load_image_array(path, image_size):
     return image
 
 
-def feature_vector_from_image(path, length, image_size):
+def image_record_from_image(path, image_size):
     image = load_image_array(path, image_size)
-    flat = image.reshape(-1)
-    chunks = np.array_split(flat, length)
-    features = []
-    for chunk in chunks:
-        mean = float(chunk.mean()) if chunk.size else 0.0
-        features.append(mean * 2.0 - 1.0)
-    return features
+    return image.tolist()
 
 
-def feature_vector_from_archive_member(member_name, archive_path, length, image_size):
+def image_record_from_archive_member(member_name, archive_path, image_size):
     suffix = "".join(Path(member_name).suffixes) or Path(member_name).suffix or ".dat"
     with tarfile.open(archive_path, "r:*") as archive:
         member = archive.extractfile(member_name)
@@ -135,7 +129,7 @@ def feature_vector_from_archive_member(member_name, archive_path, length, image_
             temp_handle.write(member.read())
             temp_path = temp_handle.name
     try:
-        return feature_vector_from_image(temp_path, length, image_size)
+        return image_record_from_image(temp_path, image_size)
     finally:
         if os.path.exists(temp_path):
             os.remove(temp_path)
@@ -152,7 +146,6 @@ def main():
 
     config = load_config(args.config)
     positive_terms = set(config.get("positive_terms", ["nodule", "positive", "malignant"]))
-    feature_dim = int(config.get("feature_dim", 24))
     image_size = int(config.get("image_size", 96))
     ensure_parent(args.output)
 
@@ -170,11 +163,9 @@ def main():
                 "sample_id": row["sample_id"],
                 "patient_id": row["patient_id"],
                 "split": row["split"],
-                "x": feature_vector_from_archive_member(
-                    image_path, args.archive, feature_dim, image_size
-                )
+                "image": image_record_from_archive_member(image_path, args.archive, image_size)
                 if args.archive
-                else feature_vector_from_image(image_path, feature_dim, image_size),
+                else image_record_from_image(image_path, image_size),
                 "y": [y],
             }
             out.write(json.dumps(record, sort_keys=True) + "\n")

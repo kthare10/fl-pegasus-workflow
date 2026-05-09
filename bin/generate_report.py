@@ -78,6 +78,7 @@ def main():
         "mode": "dual_branch",
         "best_branch": cross_eval.get("best_branch"),
         "best_accuracy": cross_eval.get("best_accuracy"),
+        "cross_dataset": cross_eval.get("cross_dataset"),
         "branches": {
             item["branch"]: {
                 "dataset_name": item["evaluation"].get("dataset_name"),
@@ -125,6 +126,15 @@ def main():
             handle.write(f"- Baseline accuracy: {item['baseline'].get('accuracy')}\n")
             handle.write(f"- Test samples: {item['evaluation'].get('test_samples')}\n")
             handle.write(f"- Clients: {item['stats'].get('num_clients')}\n\n")
+        if cross_eval.get("cross_dataset"):
+            handle.write("## Cross-Dataset Evaluation\n")
+            for source_branch, targets in cross_eval["cross_dataset"].items():
+                handle.write(f"- {source_branch}\n")
+                for target_branch, metrics in targets.items():
+                    handle.write(
+                        f"  - on {target_branch}: accuracy={metrics.get('accuracy')} samples={metrics.get('test_samples')}\n"
+                    )
+            handle.write("\n")
 
     provenance = {
         "generated_at": datetime.now(timezone.utc).isoformat(),

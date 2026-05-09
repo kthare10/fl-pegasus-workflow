@@ -1,0 +1,21 @@
+{
+  "experiment_id": "E5",
+  "experiment_name": "cross_dataset_transfer",
+  "notes": "Design spec only. The current workflow cannot execute a joint TCIA+NIH cross-dataset transfer experiment from one config.",
+  "requires_code_changes": [
+    "mixed_dataset_manifest_support",
+    "dataset_specific_preprocessing_in_one_workflow",
+    "checkpoint_warm_start_across_datasets",
+    "explicit_transfer_evaluation_protocol"
+  ],
+  "algorithm": "fedavg",
+  "rounds": 50,
+  "local_epochs": 5,
+  "target_clients": {
+    "tcia": 10,
+    "nih": 10
+  },
+  "source_dataset": "tcia",
+  "target_dataset": "nih-cxr14",
+  "purpose": "Cross-modality transfer"
+}

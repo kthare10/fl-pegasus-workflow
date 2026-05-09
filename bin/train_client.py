@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 
-"""Train one federated client for one round using PyTorch and FedProx."""
+"""Train one federated client for one round using image models, PyTorch, and FedProx."""
 
 import argparse
 import json
@@ -10,40 +10,31 @@ import sys
 sys.path.insert(0, os.path.dirname(__file__))
 
 import torch  # noqa: E402
-from torch import nn  # noqa: E402
-from torch.utils.data import DataLoader, TensorDataset  # noqa: E402
+from torch.utils.data import DataLoader  # noqa: E402
 
 from flwr_torch_utils import (  # noqa: E402
+    ImageRecordDataset,
+    ResourceMonitor,
     build_model_from_spec,
+    checkpoint_payload,
+    compute_pos_weight,
     ensure_parent,
+    evaluate_records,
     get_model_spec,
+    learning_rates,
     load_config,
     load_model_payload,
+    load_records,
+    make_loss_fn,
     make_optimizer,
-    model_payload,
+    make_scheduler,
+    maybe_unfreeze_backbone,
+    safe_mean,
+    save_model_payload,
     select_device,
     set_seed,
+    train_one_epoch,
 )
-
-
-def load_records(path, split):
-    features = []
-    labels = []
-    with open(path, "r", encoding="utf-8") as handle:
-        for line in handle:
-            record = json.loads(line)
-            if record["split"] != split:
-                continue
-            features.append(record["x"])
-            labels.append(record["y"])
-    return features, labels
-
-
-def proximal_penalty(model, global_state, device):
-    penalty = torch.zeros(1, device=device)
-    for name, parameter in model.named_parameters():
-        penalty = penalty + torch.sum((parameter - global_state[name].to(device)) ** 2)
-    return penalty
 
 
 def main():
@@ -64,69 +55,81 @@ def main():
     model_spec.update(get_model_spec(config))
     device = select_device(config)
 
+    train_records = load_records([args.client_data], split="train")
+    val_records = load_records([args.client_data], split="val")
+    train_dataset = ImageRecordDataset(train_records, config, train=True)
+    batch_size = min(int(config.get("batch_size", 8)), max(len(train_dataset), 1))
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+
     model = build_model_from_spec(model_spec).to(device)
     model.load_state_dict(global_state)
     optimizer = make_optimizer(model, config)
-    criterion = nn.BCEWithLogitsLoss()
-    local_epochs = int(config.get("local_epochs", 1))
-    features, labels = load_records(args.client_data, "train")
+    scheduler = make_scheduler(optimizer, config, int(config.get("local_epochs", 1)))
+    pos_weight = compute_pos_weight(train_records, config)
+    loss_fn = make_loss_fn(config, pos_weight=pos_weight, device=device)
+    monitor = ResourceMonitor(float(config.get("monitor_interval_seconds", 5)), device=device).start()
 
-    x_tensor = torch.tensor(features, dtype=torch.float32)
-    y_tensor = torch.tensor(labels, dtype=torch.float32)
-    if y_tensor.ndim == 1:
-        y_tensor = y_tensor.unsqueeze(1)
-    dataset = TensorDataset(x_tensor, y_tensor)
-    batch_size = min(int(config.get("batch_size", 8)), max(len(dataset), 1))
-    loader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
+    epoch_metrics = []
+    unfroze_backbone = False
+    for epoch_idx in range(int(config.get("local_epochs", 1))):
+        if maybe_unfreeze_backbone(model, config, epoch_idx):
+            optimizer = make_optimizer(model, config)
+            scheduler = make_scheduler(optimizer, config, int(config.get("local_epochs", 1)))
+            unfroze_backbone = True
+        metrics = train_one_epoch(model, train_loader, optimizer, loss_fn, device, config, global_state=global_state)
+        metrics["epoch"] = epoch_idx + 1
+        if scheduler is not None:
+            scheduler.step()
+        metrics["learning_rates"] = learning_rates(optimizer)
+        if val_records:
+            metrics["val"] = evaluate_records(model, val_records, config, device)
+        epoch_metrics.append(metrics)
 
-    use_fedprox = str(config.get("aggregation", "fedavg")).lower() == "fedprox" or str(
-        config.get("algorithm", "")
-    ).lower() == "fedprox"
-    fedprox_mu = float(config.get("fedprox_mu", config.get("mu", 0.0)))
-
-    losses = []
-    model.train()
-    for _ in range(local_epochs):
-        for batch_x, batch_y in loader:
-            batch_x = batch_x.to(device)
-            batch_y = batch_y.to(device)
-            optimizer.zero_grad()
-            logits = model(batch_x)
-            loss = criterion(logits, batch_y)
-            if use_fedprox and fedprox_mu > 0:
-                loss = loss + 0.5 * fedprox_mu * proximal_penalty(model, global_state, device)
-            loss.backward()
-            optimizer.step()
-            losses.append(float(loss.detach().cpu().item()))
+    resource_summary = monitor.stop()
 
     state_dict = {name: tensor.detach().cpu() for name, tensor in model.state_dict().items()}
-    update = model_payload(args.round, model_spec, state_dict)
-    update["client_id"] = args.client_id
-    update["sample_count"] = len(dataset)
+    update = checkpoint_payload(
+        args.round,
+        model_spec,
+        state_dict,
+        extra={
+            "client_id": args.client_id,
+            "sample_count": len(train_records),
+            "aggregation": str(config.get("aggregation", "fedavg")).lower(),
+            "fedprox_mu": float(config.get("fedprox_mu", config.get("mu", 0.0))),
+        },
+    )
 
     metrics = {
         "round": args.round,
         "client_id": args.client_id,
         "device": str(device),
         "framework": "flwr+pytorch",
-        "algorithm": "fedprox" if use_fedprox and fedprox_mu > 0 else "fedavg",
-        "fedprox_mu": fedprox_mu if use_fedprox else 0.0,
-        "train_samples": len(dataset),
-        "mean_loss": sum(losses) / len(losses) if losses else None,
+        "algorithm": str(config.get("aggregation", "fedavg")).lower(),
+        "model_name": model_spec["model_name"],
+        "train_samples": len(train_records),
+        "val_samples": len(val_records),
+        "mean_train_loss": safe_mean([item["mean_loss"] for item in epoch_metrics if item["mean_loss"] is not None]),
+        "mean_train_accuracy": safe_mean(
+            [item["mean_accuracy"] for item in epoch_metrics if item["mean_accuracy"] is not None]
+        ),
+        "epoch_metrics": epoch_metrics,
+        "class_weighted_loss": pos_weight.tolist() if pos_weight is not None else None,
+        "resource_monitor": resource_summary,
+        "unfroze_backbone": unfroze_backbone,
     }
-    count = {"client_id": args.client_id, "sample_count": len(dataset)}
+    count = {"client_id": args.client_id, "sample_count": len(train_records)}
 
     for path in (args.output_model, args.metrics, args.count_output):
         ensure_parent(path)
-    with open(args.output_model, "w", encoding="utf-8") as handle:
-        json.dump(update, handle, indent=2, sort_keys=True)
+    save_model_payload(args.output_model, update)
     with open(args.metrics, "w", encoding="utf-8") as handle:
         json.dump(metrics, handle, indent=2, sort_keys=True)
     with open(args.count_output, "w", encoding="utf-8") as handle:
         json.dump(count, handle, indent=2, sort_keys=True)
 
     print(
-        f"Trained client {args.client_id} round {args.round} on {len(dataset)} samples using {metrics['algorithm']}"
+        f"Trained client {args.client_id} round {args.round} on {len(train_records)} samples using {metrics['algorithm']}"
     )
 
 

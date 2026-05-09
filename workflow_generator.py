@@ -26,6 +26,7 @@ TOOL_CONFIGS = {
     "preprocess_nih_cxr14": {"memory": "2 GB", "cores": 2},
     "initialize_model": {"memory": "1 GB", "cores": 1},
     "train_client": {"memory": "8 GB", "cores": 2},
+    "train_centralized": {"memory": "8 GB", "cores": 2},
     "aggregate": {"memory": "2 GB", "cores": 1},
     "evaluate": {"memory": "4 GB", "cores": 2},
     "baseline_evaluate": {"memory": "2 GB", "cores": 1},
@@ -84,8 +85,10 @@ class FederatedLearningWorkflow:
         self.input_replicas = {}
         self.static_manifest_paths = {}
         self.branch_states = []
+        self.cross_eval_spec_path = None
         if self.branch_pipelines:
             self._prepare_branch_states()
+            self._write_cross_eval_spec()
         elif self.stage_input_data:
             self._prepare_condorio_inputs()
 
@@ -237,6 +240,24 @@ class FederatedLearningWorkflow:
             )
             self.num_clients += int(branch_config["num_clients"])
 
+    def _write_cross_eval_spec(self):
+        spec_dir = os.path.join(self.wf_dir, "manifests")
+        os.makedirs(spec_dir, exist_ok=True)
+        self.cross_eval_spec_path = os.path.join(spec_dir, "branch_matrix_spec.json")
+        payload = {"branches": {}}
+        for branch in self.branch_states:
+            branch_id = branch["id"]
+            payload["branches"][branch_id] = {
+                "config": branch["config_lfn"],
+                "model": f"models/{branch_id}/round_{self.rounds:03d}_global.pt",
+                "client_data": [
+                    f"preprocessed/{branch_id}/client_{client_id:03d}.jsonl"
+                    for client_id in range(branch["num_clients"])
+                ],
+            }
+        with open(self.cross_eval_spec_path, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, indent=2, sort_keys=True)
+
     def create_pegasus_properties(self):
         self.props = Properties()
         self.props["pegasus.transfer.threads"] = "16"
@@ -300,7 +321,7 @@ class FederatedLearningWorkflow:
                 is_stageable=True,
                 container=container,
             ).add_pegasus_profile(memory=resources["memory"], cores=resources.get("cores", 1))
-            if tool_name == "train_client" and self.config.get("request_gpus", 0):
+            if tool_name in {"train_client", "train_centralized"} and self.config.get("request_gpus", 0):
                 tx.add_condor_profile(request_gpus=str(self.config["request_gpus"]))
             transformations.append(tx)
 
@@ -316,6 +337,12 @@ class FederatedLearningWorkflow:
         )
 
         if self.branch_pipelines:
+            if self.cross_eval_spec_path:
+                self.rc.add_replica(
+                    "local",
+                    "manifests/branch_matrix_spec.json",
+                    "file://" + os.path.abspath(self.cross_eval_spec_path),
+                )
             for branch in self.branch_states:
                 self.rc.add_replica(
                     "local",
@@ -391,7 +418,7 @@ class FederatedLearningWorkflow:
             update = File(
                 self._prefixed_path(
                     path_prefix,
-                    f"models/round_{round_idx:03d}/client_{client_id:03d}_weights.json",
+                    f"models/round_{round_idx:03d}/client_{client_id:03d}_weights.pt",
                 )
             )
             train_metrics = File(
@@ -446,7 +473,7 @@ class FederatedLearningWorkflow:
             )
             round_wf.add_jobs(train_job)
 
-        next_global = File(self._prefixed_path(path_prefix, f"models/round_{round_idx:03d}_global.json"))
+        next_global = File(self._prefixed_path(path_prefix, f"models/round_{round_idx:03d}_global.pt"))
         aggregation_metrics = File(
             self._prefixed_path(
                 path_prefix,
@@ -578,7 +605,7 @@ class FederatedLearningWorkflow:
                 self.wf.add_jobs(preprocess_job)
 
             model_config = File(f"models/{branch_id}/model_config.json")
-            current_global = File(f"models/{branch_id}/round_000_global.json")
+            current_global = File(f"models/{branch_id}/round_000_global.pt")
             init_job = (
                 Job(
                     "initialize_model",
@@ -651,12 +678,12 @@ class FederatedLearningWorkflow:
             baseline_metrics = File(f"metrics/{branch_id}/{branch_id}_baseline.json")
             baseline_job = (
                 Job(
-                    "baseline_evaluate",
+                    "train_centralized",
                     _id=f"baseline_{branch_id}",
                     node_label=f"baseline_{branch_id}",
                 )
                 .add_args("--config", config_file, "--output", baseline_metrics)
-                .add_inputs(config_file, *(shard for _, shard in client_shards))
+                .add_inputs(config_file, self.runtime_support_files["flwr_torch_utils"], *(shard for _, shard in client_shards))
                 .add_outputs(baseline_metrics, stage_out=True, register_replica=False)
             )
             for _, shard in client_shards:
@@ -689,6 +716,8 @@ class FederatedLearningWorkflow:
                 {
                     "id": branch_id,
                     "config_file": config_file,
+                    "model": current_global,
+                    "client_shards": [shard for _, shard in client_shards],
                     "evaluation": evaluation_metrics,
                     "baseline": baseline_metrics,
                     "stats": stats_metrics,
@@ -696,10 +725,12 @@ class FederatedLearningWorkflow:
                 }
             )
 
+        cross_eval_spec = File("manifests/branch_matrix_spec.json")
         cross_eval = File("metrics/cross_eval.json")
         cross_job = (
             Job("cross_eval", _id="cross_eval", node_label="cross_eval")
-            .add_args("--output", cross_eval)
+            .add_args("--matrix-spec", cross_eval_spec, "--output", cross_eval)
+            .add_inputs(cross_eval_spec)
             .add_outputs(cross_eval, stage_out=True, register_replica=False)
         )
         for branch in branch_outputs:
@@ -713,7 +744,15 @@ class FederatedLearningWorkflow:
                 "--stats",
                 branch["stats"],
             )
-            cross_job.add_inputs(branch["evaluation"], branch["baseline"], branch["stats"])
+            cross_job.add_inputs(
+                branch["evaluation"],
+                branch["baseline"],
+                branch["stats"],
+                branch["config_file"],
+                branch["model"],
+                *branch["client_shards"],
+                self.runtime_support_files["flwr_torch_utils"],
+            )
         self.wf.add_jobs(cross_job)
 
         plot_summary = File("results/plot_summary.json")
@@ -847,7 +886,7 @@ class FederatedLearningWorkflow:
             self.wf.add_jobs(preprocess_job)
 
         model_config = File("models/model_config.json")
-        current_global = File("models/round_000_global.json")
+        current_global = File("models/round_000_global.pt")
         init_job = (
             Job("initialize_model", _id="initialize_model", node_label="initialize_model")
             .add_args(

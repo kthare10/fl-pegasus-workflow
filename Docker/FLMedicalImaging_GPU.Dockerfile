@@ -1,4 +1,4 @@
-FROM python:3.11-slim
+FROM pytorch/pytorch:2.5.1-cuda12.4-cudnn9-runtime
 
 ENV PYTHONUNBUFFERED=1
 
@@ -15,7 +15,6 @@ RUN pip install --no-cache-dir \
     numpy==1.26.4 \
     pandas==2.2.3 \
     Pillow==10.4.0 \
-    torch==2.5.1 \
     torchvision==0.20.1 \
     flwr==1.14.0 \
     psutil==6.1.0 \

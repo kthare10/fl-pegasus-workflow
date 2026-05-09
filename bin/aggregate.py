@@ -1,21 +1,14 @@
 #!/usr/bin/env python3
 
-"""Aggregate client updates with Flower-compatible FedAvg/FedProx weighting."""
+"""Aggregate client checkpoints with Flower-compatible FedAvg/FedProx weighting."""
 
 import argparse
-import json
 import os
 import sys
 
 sys.path.insert(0, os.path.dirname(__file__))
 
-from flwr_torch_utils import (  # noqa: E402
-    aggregate_state_dicts,
-    ensure_parent,
-    load_config,
-    load_model_payload,
-    model_payload,
-)
+from flwr_torch_utils import aggregate_state_dicts, checkpoint_payload, ensure_parent, load_config, load_model_payload, save_model_payload  # noqa: E402
 
 
 def main():
@@ -44,9 +37,15 @@ def main():
         updates = [(state_dict, 1, client_id) for state_dict, _, client_id in updates]
 
     aggregated_state = aggregate_state_dicts([(state_dict, count) for state_dict, count, _ in updates])
-    model = model_payload(args.round, model_spec, aggregated_state)
-    model["aggregation"] = str(config.get("aggregation", "fedavg")).lower()
-    model["fedprox_mu"] = float(config.get("fedprox_mu", config.get("mu", 0.0)))
+    model = checkpoint_payload(
+        args.round,
+        model_spec,
+        aggregated_state,
+        extra={
+            "aggregation": str(config.get("aggregation", "fedavg")).lower(),
+            "fedprox_mu": float(config.get("fedprox_mu", config.get("mu", 0.0))),
+        },
+    )
 
     metrics = {
         "round": args.round,
@@ -59,8 +58,7 @@ def main():
 
     ensure_parent(args.output_model)
     ensure_parent(args.metrics)
-    with open(args.output_model, "w", encoding="utf-8") as handle:
-        json.dump(model, handle, indent=2, sort_keys=True)
+    save_model_payload(args.output_model, model)
     with open(args.metrics, "w", encoding="utf-8") as handle:
         json.dump(metrics, handle, indent=2, sort_keys=True)
     print(f"Aggregated round {args.round} from {len(updates)} clients using {metrics['aggregation']}")

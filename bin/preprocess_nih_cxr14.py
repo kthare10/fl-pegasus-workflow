@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 
-"""Preprocess one NIH ChestX-ray14 federated client into JSONL features."""
+"""Preprocess one NIH ChestX-ray14 federated client into JSONL image records."""
 
 import argparse
 import csv
@@ -52,15 +52,9 @@ def load_image_array(path, image_size, archive_path=None):
         return np.asarray(img, dtype=np.float32) / 255.0
 
 
-def feature_vector_from_image(path, length, image_size, archive_path=None):
+def image_record_from_image(path, image_size, archive_path=None):
     image = load_image_array(path, image_size, archive_path=archive_path)
-    flat = image.reshape(-1)
-    chunks = np.array_split(flat, length)
-    features = []
-    for chunk in chunks:
-        mean = float(chunk.mean()) if chunk.size else 0.0
-        features.append(mean * 2.0 - 1.0)
-    return features
+    return image.tolist()
 
 
 def label_vector(raw_labels, labels):
@@ -79,7 +73,6 @@ def main():
 
     config = load_config(args.config)
     labels = config.get("labels", ["Atelectasis", "Cardiomegaly", "Effusion", "No Finding"])
-    feature_dim = int(config.get("feature_dim", 16))
     image_size = int(config.get("image_size", 224))
     ensure_parent(args.output)
 
@@ -94,9 +87,7 @@ def main():
                 "sample_id": row["sample_id"],
                 "patient_id": row["patient_id"],
                 "split": row["split"],
-                "x": feature_vector_from_image(
-                    row["image_path"], feature_dim, image_size, archive_path=args.archive
-                ),
+                "image": image_record_from_image(row["image_path"], image_size, archive_path=args.archive),
                 "y": label_vector(row["labels"], labels),
             }
             out.write(json.dumps(record, sort_keys=True) + "\n")

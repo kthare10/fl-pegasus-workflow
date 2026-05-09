@@ -9,7 +9,7 @@
   "image_path_column": "image_path",
   "stage_input_data": true,
   "allow_synthetic_fallback": false,
-  "container_image": "docker://username/fl-medical-imaging:latest",
+  "container_image": "docker://kthare10/fl-medical-imaging:latest",
   "client_partition_strategy": "scanner_or_protocol_proxy",
   "num_clients": 4,
   "samples_per_client": 12,
