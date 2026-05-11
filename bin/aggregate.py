@@ -3,6 +3,7 @@
 """Aggregate client checkpoints with Flower-compatible FedAvg/FedProx weighting."""
 
 import argparse
+import json
 import os
 import sys
 
