@@ -33,6 +33,18 @@ Inside each round subworkflow, Pegasus runs:
 
 1. one `train_client` job per client in parallel
 2. one `aggregate` job that consumes all client updates for that round
+3. one `bundle_round_outputs` job that exports the round checkpoint and round
+   aggregation metric as a single child-workflow artifact
+
+After each round subworkflow finishes, the parent workflow runs
+`unpack_round_outputs` to restore:
+
+- `models/round_{r}_global.pt`
+- `metrics/round_{r}/global_round_{r}_aggregation.json`
+
+This bundle/unpack handoff is deliberate. It gives Pegasus one child artifact
+to propagate back to parent scratch, which is more reliable than exporting the
+checkpoint and metric as separate child outputs.
 
 In dual-branch mode, the workflow also runs:
 
@@ -199,6 +211,29 @@ Additional runtime controls now supported in configs include:
 - `unfreeze_backbone_epoch`
 - `class_weighted_loss`
 - `monitor_interval_seconds`
+
+## Experiment Config Pack
+
+Experiment templates live under
+[configs/experiments](/Users/kthare10/codex/escience-fl/fl-pegasus-workflow/configs/experiments:1).
+
+Important note: some older experiment JSON files were authored before the
+current image-based `resnet18` runtime and `gpu-flwr` container became the
+default validation path. In practice, the safest way to launch an experiment
+is:
+
+1. start from a known-good current config that already runs on the active
+   Pegasus/HTCondor environment
+2. carry over the experiment-specific values such as `rounds`,
+   `local_epochs`, `num_clients`, and `aggregation`
+3. keep runtime fields aligned with the current stack:
+   - `container_image: docker://...:gpu-flwr`
+   - `model_name: resnet18`
+   - `request_gpus: 1`
+   - optimizer/scheduler/class-weighted-loss settings
+
+This matters because historical experiment configs may still reference older
+container tags or feature-based smoke models such as `linear-smoke`.
 
 ### NIH ChestX-ray14
 

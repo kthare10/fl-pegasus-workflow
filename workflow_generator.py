@@ -28,6 +28,9 @@ TOOL_CONFIGS = {
     "train_client": {"memory": "8 GB", "cores": 2},
     "train_centralized": {"memory": "8 GB", "cores": 2},
     "aggregate": {"memory": "2 GB", "cores": 1},
+    "publish_round_outputs": {"memory": "512 MB", "cores": 1},
+    "bundle_round_outputs": {"memory": "512 MB", "cores": 1},
+    "unpack_round_outputs": {"memory": "512 MB", "cores": 1},
     "evaluate": {"memory": "4 GB", "cores": 2},
     "baseline_evaluate": {"memory": "2 GB", "cores": 1},
     "compute_branch_stats": {"memory": "1 GB", "cores": 1},
@@ -148,6 +151,7 @@ class FederatedLearningWorkflow:
             "sample_id",
             "patient_id",
             "client_id",
+            "pipeline_id",
             "split",
             "image_path",
             "labels",
@@ -473,6 +477,143 @@ class FederatedLearningWorkflow:
             )
             round_wf.add_jobs(train_job)
 
+        internal_next_global = File(
+            self._prefixed_path(path_prefix, f"internal/models/round_{round_idx:03d}_global.pt")
+        )
+        internal_aggregation_metrics = File(
+            self._prefixed_path(
+                path_prefix,
+                f"internal/metrics/round_{round_idx:03d}/{path_prefix or 'global'}_round_{round_idx:03d}_aggregation.json",
+            )
+        )
+        aggregate_job = (
+            Job(
+                "aggregate",
+                _id=f"aggregate_round_{round_idx:03d}",
+                node_label=f"aggregate_round_{round_idx:03d}",
+            )
+            .add_args(
+                "--config",
+                config_file,
+                "--round",
+                str(round_idx),
+                "--output-model",
+                internal_next_global,
+                "--metrics",
+                internal_aggregation_metrics,
+            )
+            .add_inputs(
+                config_file,
+                self.runtime_support_files["flwr_torch_utils"],
+                *client_updates,
+                *client_counts,
+            )
+            .add_outputs(internal_next_global, stage_out=False, register_replica=False)
+            .add_outputs(internal_aggregation_metrics, stage_out=False, register_replica=False)
+        )
+        for update in client_updates:
+            aggregate_job.add_args("--client-update", update)
+        for count_file in client_counts:
+            aggregate_job.add_args("--client-count", count_file)
+        round_wf.add_jobs(aggregate_job)
+
+        next_global = File(self._prefixed_path(path_prefix, f"models/round_{round_idx:03d}_global.pt"))
+        aggregation_metrics = File(
+            self._prefixed_path(
+                path_prefix,
+                f"metrics/round_{round_idx:03d}/{path_prefix or 'global'}_round_{round_idx:03d}_aggregation.json",
+            )
+        )
+        round_bundle = File(
+            self._prefixed_path(path_prefix, f"artifacts/round_{round_idx:03d}_outputs.tar"))
+        bundle_job = (
+            Job(
+                "bundle_round_outputs",
+                _id=f"bundle_round_{round_idx:03d}",
+                node_label=f"bundle_round_{round_idx:03d}",
+            )
+            .add_args(
+                "--model-in", internal_next_global,
+                "--metric-in", internal_aggregation_metrics,
+                "--bundle-out", round_bundle,
+            )
+            .add_inputs(internal_next_global, internal_aggregation_metrics)
+            .add_outputs(round_bundle, stage_out=True, register_replica=False)
+        )
+        round_wf.add_jobs(bundle_job)
+
+        return round_wf, next_global, aggregation_metrics, round_bundle
+
+    def add_flat_round_jobs(
+        self,
+        target_wf,
+        round_idx,
+        config_file,
+        current_global,
+        client_shards,
+        path_prefix="",
+    ):
+        client_updates = []
+        client_counts = []
+        for client_id, shard in client_shards:
+            update = File(
+                self._prefixed_path(
+                    path_prefix,
+                    f"models/round_{round_idx:03d}/client_{client_id:03d}_weights.pt",
+                )
+            )
+            train_metrics = File(
+                self._prefixed_path(
+                    path_prefix,
+                    f"metrics/round_{round_idx:03d}/{path_prefix or 'global'}_client_{client_id:03d}_train.json",
+                )
+            )
+            count_file = File(
+                self._prefixed_path(
+                    path_prefix,
+                    f"metrics/round_{round_idx:03d}/{path_prefix or 'global'}_client_{client_id:03d}_count.json",
+                )
+            )
+            client_updates.append(update)
+            client_counts.append(count_file)
+
+            train_job = (
+                Job(
+                    "train_client",
+                    _id=f"train_r{round_idx:03d}_client_{client_id:03d}",
+                    node_label=f"train_r{round_idx:03d}_client_{client_id:03d}",
+                )
+                .add_args(
+                    "--config",
+                    config_file,
+                    "--client-id",
+                    str(client_id),
+                    "--round",
+                    str(round_idx),
+                    "--global-model",
+                    current_global,
+                    "--client-data",
+                    shard,
+                    "--output-model",
+                    update,
+                    "--metrics",
+                    train_metrics,
+                    "--count-output",
+                    count_file,
+                )
+                .add_inputs(
+                    config_file,
+                    current_global,
+                    shard,
+                    self.runtime_support_files["flwr_torch_utils"],
+                )
+                .add_outputs(update, stage_out=False, register_replica=False)
+                .add_outputs(train_metrics, stage_out=True, register_replica=False)
+                .add_outputs(count_file, stage_out=False, register_replica=False)
+                .add_pegasus_profiles(label=f"client_{client_id:03d}")
+            )
+            target_wf.add_jobs(train_job)
+
         next_global = File(self._prefixed_path(path_prefix, f"models/round_{round_idx:03d}_global.pt"))
         aggregation_metrics = File(
             self._prefixed_path(
@@ -503,15 +644,15 @@ class FederatedLearningWorkflow:
                 *client_counts,
             )
             .add_outputs(next_global, stage_out=False, register_replica=False)
-            .add_outputs(aggregation_metrics, stage_out=False, register_replica=False)
+            .add_outputs(aggregation_metrics, stage_out=True, register_replica=False)
         )
         for update in client_updates:
             aggregate_job.add_args("--client-update", update)
         for count_file in client_counts:
             aggregate_job.add_args("--client-count", count_file)
-        round_wf.add_jobs(aggregate_job)
+        target_wf.add_jobs(aggregate_job)
 
-        return round_wf, next_global, aggregation_metrics
+        return next_global, aggregation_metrics
 
     def create_dual_branch_workflow(self):
         self.wf = Workflow(self.wf_name, infer_dependencies=True)
@@ -627,7 +768,7 @@ class FederatedLearningWorkflow:
             self.wf.add_jobs(init_job)
 
             for round_idx in range(1, self.rounds + 1):
-                round_wf, next_global, aggregation_metrics = self.create_round_subworkflow(
+                round_wf, next_global, aggregation_metrics, round_bundle = self.create_round_subworkflow(
                     round_idx,
                     config_file,
                     branch["config_path"],
@@ -637,15 +778,35 @@ class FederatedLearningWorkflow:
                     path_prefix=branch_id,
                 )
                 round_job = (
-                    SubWorkflow(
+                SubWorkflow(
                         round_wf,
                         _id=f"fl_round_{branch_id}_r{round_idx - 1}",
                         node_label=f"fl_round_{branch_id}_r{round_idx - 1}",
                     )
                     .add_inputs(config_file, current_global, *(shard for _, shard in client_shards))
-                    .add_outputs(next_global, stage_out=False, register_replica=False)
+                    .add_outputs(
+                        round_bundle,
+                        stage_out=True,
+                        register_replica=False,
+                    )
                 )
                 self.wf.add_jobs(round_job)
+                unpack_job = (
+                    Job(
+                        "unpack_round_outputs",
+                        _id=f"unpack_{branch_id}_round_{round_idx:03d}",
+                        node_label=f"unpack_{branch_id}_round_{round_idx:03d}",
+                    )
+                    .add_args(
+                        "--bundle", round_bundle,
+                        "--model-out", next_global,
+                        "--metric-out", aggregation_metrics,
+                    )
+                    .add_inputs(round_bundle)
+                    .add_outputs(next_global, stage_out=False, register_replica=False)
+                    .add_outputs(aggregation_metrics, stage_out=False, register_replica=False)
+                )
+                self.wf.add_jobs(unpack_job)
                 current_global = next_global
 
             evaluation_metrics = File(f"metrics/{branch_id}/{branch_id}_final_evaluation.json")
@@ -730,7 +891,7 @@ class FederatedLearningWorkflow:
         cross_job = (
             Job("cross_eval", _id="cross_eval", node_label="cross_eval")
             .add_args("--matrix-spec", cross_eval_spec, "--output", cross_eval)
-            .add_inputs(cross_eval_spec)
+            .add_inputs(cross_eval_spec, self.runtime_support_files["flwr_torch_utils"])
             .add_outputs(cross_eval, stage_out=True, register_replica=False)
         )
         for branch in branch_outputs:
@@ -751,7 +912,6 @@ class FederatedLearningWorkflow:
                 branch["config_file"],
                 branch["model"],
                 *branch["client_shards"],
-                self.runtime_support_files["flwr_torch_utils"],
             )
         self.wf.add_jobs(cross_job)
 
@@ -905,7 +1065,7 @@ class FederatedLearningWorkflow:
 
         round_metrics = []
         for round_idx in range(1, self.rounds + 1):
-            round_wf, next_global, aggregation_metrics = self.create_round_subworkflow(
+            round_wf, next_global, aggregation_metrics, round_bundle = self.create_round_subworkflow(
                 round_idx,
                 config_file,
                 self.config_path,
@@ -919,10 +1079,29 @@ class FederatedLearningWorkflow:
                     node_label=f"subwf_round_{round_idx:03d}",
                 )
                 .add_inputs(config_file, current_global, *client_shards)
-                .add_outputs(next_global, stage_out=False, register_replica=False)
-                .add_outputs(aggregation_metrics, stage_out=True, register_replica=False)
+                .add_outputs(
+                    round_bundle,
+                    stage_out=True,
+                    register_replica=False,
+                )
             )
             self.wf.add_jobs(round_job)
+            unpack_job = (
+                Job(
+                    "unpack_round_outputs",
+                    _id=f"unpack_round_{round_idx:03d}",
+                    node_label=f"unpack_round_{round_idx:03d}",
+                )
+                .add_args(
+                    "--bundle", round_bundle,
+                    "--model-out", next_global,
+                    "--metric-out", aggregation_metrics,
+                )
+                .add_inputs(round_bundle)
+                .add_outputs(next_global, stage_out=False, register_replica=False)
+                .add_outputs(aggregation_metrics, stage_out=False, register_replica=False)
+            )
+            self.wf.add_jobs(unpack_job)
             current_global = next_global
             round_metrics.append(aggregation_metrics)
 
